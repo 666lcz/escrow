@@ -9,12 +9,18 @@ type SolanaConfig = {
   keypair_path: string;
 };
 
+export type AppConfig = {
+  initializer_keypair_path: string,
+  initializer_x_token_account_pub_key: string,
+  initializer_y_token_account_pub_key: string,
+};
+
 /**
  * Load and parse the Solana CLI config file to determine which RPC url to use
  */
-export async function getRpcUrl(): Promise<string> {
+export async function getRpcUrl(filePath?: string): Promise<string> {
   try {
-    const config = await getConfig();
+    const config = await getConfig(filePath);
     if (!config.json_rpc_url) throw new Error("Missing RPC URL");
     return config.json_rpc_url;
   } catch (err) {
@@ -28,27 +34,31 @@ export async function getRpcUrl(): Promise<string> {
 /**
  * @private
  */
-async function getConfig(): Promise<SolanaConfig> {
-  // Path to Solana CLI config file
-  const CONFIG_FILE_PATH = path.resolve(
-    os.homedir(),
-    ".config",
-    "solana",
-    "cli",
-    "config.yml"
-  );
-  const configYml = await fs.readFile(CONFIG_FILE_PATH, { encoding: "utf8" });
+async function getConfig(filePath?: string): Promise<SolanaConfig> {
+  if (filePath === undefined) {
+    filePath = path.resolve(
+      os.homedir(),
+      ".config",
+      "solana",
+      "cli",
+      "config.yml"
+    );
+  }
+  const configYml = await fs.readFile(filePath, { encoding: "utf8" });
   return yaml.parse(configYml) as SolanaConfig;
+}
+
+export async function getAppConfig(filePath: string): Promise<AppConfig> {
+  const configYml = await fs.readFile(filePath, { encoding: "utf8" });
+  return yaml.parse(configYml) as AppConfig;
 }
 
 /**
  * Load and parse the Solana CLI config file to determine which payer to use
  */
-export async function getPayer(): Promise<Keypair> {
+export async function getPayer(keypairPath: string): Promise<Keypair> {
   try {
-    const config = await getConfig();
-    if (!config.keypair_path) throw new Error("Missing keypair path");
-    return await createKeypairFromFile(config.keypair_path);
+    return await createKeypairFromFile(keypairPath);
   } catch (err) {
     console.warn(
       "Failed to create keypair from CLI config file, falling back to new random keypair"
