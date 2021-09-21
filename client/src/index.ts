@@ -8,6 +8,7 @@ import {
   checkProgram,
   initEscrow,
   getConfig,
+  takeTrade,
 } from "./escrow_client";
 
 async function main() {
@@ -26,16 +27,30 @@ async function main() {
   // Check if the program has been deployed
   const programId = await checkProgram();
 
+  const xAmount = "10";
+  const yAmount = "20";
   const escrowInfo = await initEscrow(
     aliceMain, 
     config.initializer_x_token_account_pub_key,
-    "5",
+    xAmount,
     config.initializer_y_token_account_pub_key,
-    "5",
+    yAmount,
     programId,
   );
 
-  console.log("Success", escrowInfo);
+  console.log("Alice has initiated the escrow", escrowInfo);
+
+  const bobMain = await establishPayer(config.taker_keypair_path);
+  const txnid = await takeTrade(
+    bobMain,
+    config.taker_y_token_account_pub_key,
+    config.taker_x_token_account_pub_key,
+    escrowInfo.escrowAccountPubkey,
+    xAmount,
+    programId,
+  );
+
+  console.log("Bob takes the trade", txnid);
 }
 
 main().then(

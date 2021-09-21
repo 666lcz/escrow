@@ -13,6 +13,9 @@ export type AppConfig = {
   initializer_keypair_path: string,
   initializer_x_token_account_pub_key: string,
   initializer_y_token_account_pub_key: string,
+  taker_keypair_path: string,
+  taker_x_token_account_pub_key: string,
+  taker_y_token_account_pub_key: string,
 };
 
 /**

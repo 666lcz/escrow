@@ -2,3 +2,6 @@
 initializer_keypair_path: /* replace with you config e.g. ~/.config/solana/id.json */
 initializer_x_token_account_pub_key: /* your key */
 initializer_y_token_account_pub_key: /* your key */
+taker_keypair_path: /* your key */
+taker_x_token_account_pub_key: /* your key */
+taker_y_token_account_pub_key: /* your key */

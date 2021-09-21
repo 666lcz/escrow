@@ -8,12 +8,14 @@ import {
   SystemProgram,
   Transaction,
   TransactionInstruction,
+  sendAndConfirmTransaction,
 } from "@solana/web3.js";
 import fs from "mz/fs";
 import path from "path";
 
 import { getRpcUrl, getPayer, createKeypairFromFile, getAppConfig, AppConfig } from "./utils";
 import { ESCROW_ACCOUNT_DATA_LAYOUT, EscrowLayout } from "./layout";
+import BN from "bn.js";
 
 /**
  * Connection to the network
@@ -82,16 +84,14 @@ export async function getConfig(): Promise<AppConfig> {
  */
 export async function establishPayer(keypairPath: string): Promise<Keypair> {
   let fees = 0;
-  if (!payer) {
-    const { feeCalculator } = await connection.getRecentBlockhash();
+  const { feeCalculator } = await connection.getRecentBlockhash();
 
-    fees += await connection.getMinimumBalanceForRentExemption(ESCROW_ACCOUNT_DATA_LAYOUT.span + AccountLayout.span);
+  fees += await connection.getMinimumBalanceForRentExemption(ESCROW_ACCOUNT_DATA_LAYOUT.span + AccountLayout.span);
 
-    // Calculate the cost of sending transactions
-    fees += feeCalculator.lamportsPerSignature * 100; // wag
+  // Calculate the cost of sending transactions
+  fees += feeCalculator.lamportsPerSignature * 100; // wag
 
-    payer = await getPayer(keypairPath);
-  }
+  payer = await getPayer(keypairPath);
 
   let lamports = await connection.getBalance(payer.publicKey);
   if (lamports < fees) {
@@ -176,11 +176,11 @@ export async function initEscrow(
   const initTempAccountIx = Token.createInitAccountInstruction(
     TOKEN_PROGRAM_ID, XTokenMintAccountPubkey, tempTokenAccountKeypair.publicKey, initializer.publicKey);
   const transferXTokensToTempAccIx = Token.createTransferInstruction(
-    TOKEN_PROGRAM_ID, 
-    initializerXTokenAccountPubkey, 
-    tempTokenAccountKeypair.publicKey, 
-    initializer.publicKey, 
-    [], 
+    TOKEN_PROGRAM_ID,
+    initializerXTokenAccountPubkey,
+    tempTokenAccountKeypair.publicKey,
+    initializer.publicKey,
+    [],
     amountXTokenSendToEscrow,
   );
 
@@ -197,12 +197,12 @@ export async function initEscrow(
   });
   const initEscrowIx = new TransactionInstruction({
     keys: [
-      {pubkey: initializer.publicKey, isSigner: true, isWritable: false},
-      {pubkey: tempTokenAccountKeypair.publicKey, isSigner: false, isWritable: true},
-      {pubkey: initializerReceivingTokenAccountPubkey, isSigner: false, isWritable: false},
-      {pubkey: escrowKeypair.publicKey, isSigner: false, isWritable: true},
-      {pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false},
-      {pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false},
+      { pubkey: initializer.publicKey, isSigner: true, isWritable: false },
+      { pubkey: tempTokenAccountKeypair.publicKey, isSigner: false, isWritable: true },
+      { pubkey: initializerReceivingTokenAccountPubkey, isSigner: false, isWritable: false },
+      { pubkey: escrowKeypair.publicKey, isSigner: false, isWritable: true },
+      { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false },
+      { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
     ],
     programId: escrowProgramID,
     data: Buffer.from(Uint8Array.of(0, ...expectedYTokenToReceive.toArray("le", 8))),
@@ -211,22 +211,74 @@ export async function initEscrow(
   // add instructions and submit transaction
   const tx = new Transaction().add(
     createTempAccountIx, initTempAccountIx, transferXTokensToTempAccIx, createEscrowAccountIx, initEscrowIx);
-  await connection.sendTransaction(
-    tx, 
-    [initializer, tempTokenAccountKeypair, escrowKeypair],  
-    {skipPreflight: false, preflightCommitment: 'singleGossip'},
-  );
+  await sendAndConfirmTransaction(connection, tx, [initializer, tempTokenAccountKeypair, escrowKeypair]);
 
   await new Promise((resolve) => setTimeout(resolve, 1000));
   const encodedEscrowState = (await connection.getAccountInfo(escrowKeypair.publicKey, 'singleGossip'))!.data;
   const decodedEscrowState = ESCROW_ACCOUNT_DATA_LAYOUT.decode(encodedEscrowState) as EscrowLayout;
-  
+
   return {
-      escrowAccountPubkey: escrowKeypair.publicKey.toBase58(),
-      isInitialized: !!decodedEscrowState.isInitialized,
-      initializerAccountPubkey: new PublicKey(decodedEscrowState.initializerPubkey).toBase58(),
-      XTokenTempAccountPubkey: new PublicKey(decodedEscrowState.initializerTempTokenAccountPubkey).toBase58(),
-      initializerYTokenAccount: new PublicKey(decodedEscrowState.initializerReceivingTokenAccountPubkey).toBase58(),
-      expectedAmount: new u64(decodedEscrowState.expectedAmount, 10, "le").toString(),
+    escrowAccountPubkey: escrowKeypair.publicKey.toBase58(),
+    isInitialized: !!decodedEscrowState.isInitialized,
+    initializerAccountPubkey: new PublicKey(decodedEscrowState.initializerPubkey).toBase58(),
+    XTokenTempAccountPubkey: new PublicKey(decodedEscrowState.initializerTempTokenAccountPubkey).toBase58(),
+    initializerYTokenAccount: new PublicKey(decodedEscrowState.initializerReceivingTokenAccountPubkey).toBase58(),
+    expectedAmount: new u64(decodedEscrowState.expectedAmount, 10, "le").toString(),
   };
+}
+
+export async function takeTrade(
+  taker: Keypair,
+  takerYAccountPubkeyString: string,
+  takerXAccountPubkeyString: string,
+  escrowAccountAddressString: string,
+  takerExpectedXTokenAmount: string,
+  programIdString: PublicKey,
+): Promise<string> {
+  // load escrow account
+  const escrowAccountPubkey = new PublicKey(escrowAccountAddressString);
+
+  let encodedEscrowState;
+  try {
+    encodedEscrowState = (await connection.getAccountInfo(escrowAccountPubkey, 'singleGossip'))!.data;
+  } catch {
+    throw new Error("Could not find the escrow account at given address");
+  }
+
+  const decodedEscrowLayout = ESCROW_ACCOUNT_DATA_LAYOUT.decode(encodedEscrowState) as EscrowLayout;
+  const escrowState = {
+    escrowAccountPubkey: escrowAccountPubkey,
+    isInitialized: !!decodedEscrowLayout.isInitialized,
+    initializerAccountPubkey: new PublicKey(decodedEscrowLayout.initializerPubkey),
+    XTokenTempAccountPubkey: new PublicKey(decodedEscrowLayout.initializerTempTokenAccountPubkey),
+    initializerYTokenAccountPubkey: new PublicKey(decodedEscrowLayout.initializerReceivingTokenAccountPubkey),
+    expectedAmount: new u64(decodedEscrowLayout.expectedAmount, 10, "le"),
+  }
+
+  const programId = new PublicKey(programIdString);
+  const PDA = await PublicKey.findProgramAddress([Buffer.from("escrow")], programId);
+
+  const takerYAccountPubkey = new PublicKey(takerYAccountPubkeyString);
+  const takerXAccountPubkey = new PublicKey(takerXAccountPubkeyString);
+  const exchangeInstruction = new TransactionInstruction({
+    programId,
+    data: Buffer.from(Uint8Array.of(1, ...new u64(takerExpectedXTokenAmount).toArray("le", 8))),
+    keys: [
+      { pubkey: taker.publicKey, isSigner: true, isWritable: false },
+      { pubkey: takerYAccountPubkey, isSigner: false, isWritable: true },
+      { pubkey: takerXAccountPubkey, isSigner: false, isWritable: true },
+      { pubkey: escrowState.XTokenTempAccountPubkey, isSigner: false, isWritable: true },
+      { pubkey: escrowState.initializerAccountPubkey, isSigner: false, isWritable: true },
+      { pubkey: escrowState.initializerYTokenAccountPubkey, isSigner: false, isWritable: true },
+      { pubkey: escrowAccountPubkey, isSigner: false, isWritable: true },
+      { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
+      { pubkey: PDA[0], isSigner: false, isWritable: false },
+    ],
+  });
+
+  return await connection.sendTransaction(
+    new Transaction().add(exchangeInstruction), 
+    [taker],
+    {skipPreflight: false, preflightCommitment: 'singleGossip'}
+  );
 }
